@@ -1,8 +1,12 @@
 ## Interface: 11500
 ## Title: BoostSplit
-## Notes: WoW Classic Boost Tracker with Sync and Gold Splits
+## Notes: WoW Classic Boost Tracker with Sync, Trade Logging, and Gold Splits
 ## Version: 1.0
 ## Author: YourName
 ## SavedVariables: BoostSplitDB
 
+# Core
 BoostSplit.lua
+
+# Libraries
+Libs\LibSerialize\LibSerialize.lua
