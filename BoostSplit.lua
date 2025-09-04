@@ -176,3 +176,73 @@ f:SetScript("OnEvent", function(self, event, arg1)
     end
   end
 end)
+
+-- === Sync System ===
+
+local SYNC_PREFIX = "BoostSplit"
+local syncedWith = nil
+
+local function MergeRemoteData(remote)
+  local changes = 0
+  for name, data in pairs(remote.roster or {}) do
+    local localData = DB.roster[name]
+    if not localData then
+      DB.roster[name] = data
+      changes = changes + 1
+    elseif data.gold and (data.gold > (localData.gold or 0)) then
+      DB.roster[name].gold = data.gold
+      DB.roster[name].runs = data.runs
+      DB.roster[name].isFriend = data.isFriend
+      changes = changes + 1
+    end
+  end
+
+  DB.mage1 = remote.mage1 or DB.mage1
+  DB.mage2 = remote.mage2 or DB.mage2
+  return changes
+end
+
+local function IsPlayerWhitelisted(name)
+  return DB.whitelist and DB.whitelist[name] == true
+end
+
+local function TrySyncWith(unit)
+  local name = UnitName(unit)
+  if not name or not IsPlayerWhitelisted(name) then return end
+  local data = {
+    roster = DB.roster,
+    mage1 = DB.mage1,
+    mage2 = DB.mage2,
+    timestamp = time()
+  }
+  local msg = LibSerialize:Serialize(data)
+  C_ChatInfo.SendAddonMessage(SYNC_PREFIX, msg, "PARTY")
+end
+
+local function ReceiveSync(sender, msg)
+  if not IsPlayerWhitelisted(sender) then return end
+  local success, data = LibSerialize:Deserialize(msg)
+  if success then
+    local updates = MergeRemoteData(data)
+    syncedWith = sender
+    Print("Synced with " .. sender .. " (" .. updates .. " updates merged)")
+  end
+end
+
+f:RegisterEvent("GROUP_ROSTER_UPDATE")
+
+f:SetScript("OnEvent", function(self, event, arg)
+  if event == "ADDON_LOADED" and arg == addonName then
+    C_ChatInfo.RegisterAddonMessagePrefix(SYNC_PREFIX)
+  elseif event == "CHAT_MSG_ADDON" then
+    local prefix, msg, channel, sender = arg, select(2, ...)
+    if prefix == SYNC_PREFIX then
+      ReceiveSync(sender, msg)
+    end
+  elseif event == "GROUP_ROSTER_UPDATE" then
+    for i = 1, GetNumGroupMembers() do
+      local name = GetRaidRosterInfo(i)
+      if name then TrySyncWith(name) end
+    end
+  end
+end)
