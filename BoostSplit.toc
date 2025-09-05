@@ -1,9 +1,8 @@
 ## Interface: 11500
 ## Title: BoostSplit
-## Notes: Boost Split Manager (Classic 1.15+ fixed)
-## Author: fishfinder (patched)
+## Notes: Boost Split Manager for Classic (1.15+ patched)
+## Author: fishfinder (rewritten)
 ## Version: 1.15.1
 ## SavedVariables: BoostSplitDB
 
 BoostSplit.lua
-
