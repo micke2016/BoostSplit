@@ -1,12 +1,9 @@
 ## Interface: 11500
 ## Title: BoostSplit
-## Notes: WoW Classic Boost Tracker with Sync, Trade Logging, and Gold Splits
-## Version: 1.0
-## Author: YourName
+## Notes: Boost Split Manager (Classic 1.15+ fixed)
+## Author: fishfinder (patched)
+## Version: 1.15.1
 ## SavedVariables: BoostSplitDB
 
-# Core
 BoostSplit.lua
 
-# Libraries
-Libs\LibSerialize\LibSerialize.lua
