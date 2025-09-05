@@ -319,7 +319,11 @@ local function BuildMain()
   local tabNames={"Main","Party","Runs","Blacklist","Settings","Loot Log","History"}
   for i=1,#tabNames do
     local b=CreateFrame("Button",nil,frame,"UIPanelButtonTemplate")
-    b:SetSize(120,22) b:SetPoint("TOPLEFT",12+(i-1)*122,-56) b:SetText(tabNames[i])
+    b:SetSize(120,22) 
+    b:SetPoint("TOPLEFT",12+(i-1)*122,-56) 
+    b:SetText(tabNames[i])
+ b:SetParent(frame)
+  b:SetFrameLevel(frame:GetFrameLevel()+2)
     panels[i]=CreateFrame("Frame",nil,frame) panels[i]:SetAllPoints() panels[i]:Hide()
     b:SetScript("OnClick",function() for j=1,#panels do panels[j]:Hide() end panels[i]:Show() end)
   end
@@ -584,7 +588,14 @@ F:SetScript("OnEvent",function(self,event,...)
 
   elseif event=="PLAYER_LOGIN" then
     BuildOverlay() BuildMain()
-    if DB().overlayEnabled and BoostSplitOverlay then BoostSplitOverlay:Show() end
+    if DB().overlayEnabled and BoostSplitOverlay then BoostSplitOverlay:Show() 
+  if UI.RefreshSummary then UI.RefreshSummary() end
+  if UI.RefreshParty then UI.RefreshParty() end
+  if UI.RefreshRuns then UI.RefreshRuns() end
+  if UI.RefreshBlacklist then UI.RefreshBlacklist() end
+  if UI.RefreshLoot then UI.RefreshLoot() end
+  if UI.RefreshHistory then UI.RefreshHistory() end
+  printLocal("BoostSplit: Main UI built, showing tab 1.") end
 
   elseif event=="GROUP_ROSTER_UPDATE" then
     if UI.RefreshParty then UI.RefreshParty() end
