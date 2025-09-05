@@ -302,6 +302,7 @@ end
 ------------------------------------------------------------------------
 local panels={}
 local function BuildMain()
+  printLocal("DEBUG: BuildMain() called")
   if BoostSplitFrame then return end
   local frame=CreateFrame("Frame","BoostSplitFrame",UIParent,"BackdropTemplate")
   frame:SetSize(1020,670) frame:SetPoint("CENTER")
@@ -656,7 +657,13 @@ SlashCmdList.BOOSTSPLIT=function(msg)
     printLocal("Commands: /bs — toggle main | /bs overlay — toggle overlay")
     return
   end
-  if BoostSplitFrame then
-    if BoostSplitFrame:IsShown() then BoostSplitFrame:Hide() else BoostSplitFrame:Show() end
+if BoostSplitFrame==nil then
+  BuildMain()  -- force build in case PLAYER_LOGIN missed
+end
+if BoostSplitFrame then
+  if BoostSplitFrame:IsShown() then
+    BoostSplitFrame:Hide()
+  else
+    BoostSplitFrame:Show()
   end
 end
