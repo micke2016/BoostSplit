@@ -329,7 +329,8 @@ local function BuildMain()
     b:SetScript("OnClick",function() for j=1,#panels do panels[j]:Hide() end panels[i]:Show() end)
   end
   panels[1]:Show()
-
+if UI.RefreshSummary then UI.RefreshSummary() end
+printLocal("DEBUG: Main tab built")
   -------------------------------------------------- Main tab
   do
     local p=panels[1]
