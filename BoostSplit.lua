@@ -1,75 +1,35 @@
 -- BoostSplit.lua — Legacy build patched for WoW Classic 1.15+
 -- Fixes applied:
---   - Safe SavedVariables init
---   - JoinChannelByName → C_ChatInfo.JoinChannel
---   - RANDOM_ROLL_RESULT fallback
---   - UI guards for BuildMain/BuildOverlay
---   - Nil safety on item/trade/money parsing
+--   * JoinChannelByName → C_ChatInfo.JoinChannel
+--   * RANDOM_ROLL_RESULT fallback
+--   * Safe BoostSplitDB init
+--   * UI BuildMain & BuildOverlay guards
+--   * Nil-safe money/loot/trade parsing
 
 local ADDON, NS = ...
-local F = CreateFrame("Frame", "BoostSplitCore")
+local F = CreateFrame("Frame","BoostSplitCore")
 local DBV
-local PREFIX   = "BSS"
-local PREFIX_R = "BSSR"
-local REALM    = (GetRealmName() or "Realm"):gsub("%s+","")
-local REALM_CHAN = "BoostSplit-"..REALM
+local PREFIX="BSS"
+local PREFIX_R="BSSR"
+local REALM=(GetRealmName() or "Realm"):gsub("%s+","")
+local REALM_CHAN="BoostSplit-"..REALM
 
 ------------------------------------------------------------------------
--- SavedVariables + defaults
+-- SavedVariables & Defaults
 ------------------------------------------------------------------------
-local function DB()
-  if not BoostSplitDB then BoostSplitDB = {} end
-  DBV = BoostSplitDB
-  return DBV
-end
+local function DB() if not BoostSplitDB then BoostSplitDB={} end DBV=BoostSplitDB return DBV end
 local function SetDefault(k,v) if DB()[k]==nil then DB()[k]=v end end
-
 local function EnsureDefaults()
-  SetDefault("overlayEnabled", true)
-  SetDefault("overlayAlpha", 0.95)
-  SetDefault("mainAlpha", 0.95)
-  SetDefault("postWelcomeOnLogin", true)
-
-  SetDefault("pricePer5", 360*10000)
-  SetDefault("runsPerPack", 5)
-  SetDefault("dungeon", "X Boost")
-  SetDefault("mage2Pct", 35)
-  SetDefault("soloBoost", false)
-
-  -- sync: no key, trust in-group peers; "Sync now" button
-  SetDefault("sync", { enabled=false, locked=false, trusted={}, autoTrust=true })
-  SetDefault("boostInProgress", false)
-  SetDefault("boostStartTs", nil)
-
-  -- roster rows: boosters + friend flags
-  SetDefault("roster", {}) -- [name]={m1=false,m2=false,m1f=false,m2f=false,paid=0,done=0}
-  SetDefault("boosterGoldStart", {})
-  SetDefault("boosterGoldCurrent", {})
-
-  SetDefault("runsLog", {})  -- newest first {start,endts,dur,kills,value,coin,excluded=false}
-
-  -- loot & coin
-  SetDefault("itemsValueSession", 0)
-  SetDefault("greyPool", 0)
-  SetDefault("vendorGoldSession", 0)
-  SetDefault("lootedCoinSession", 0)
-  SetDefault("lootEvents", {})
-  SetDefault("coinEvents", {})
-  SetDefault("deMarked", {})
-  SetDefault("matTally", { cloth={}, herbs={}, ench={} })
-  SetDefault("_seen", { loot={}, coin={}, paid={} })
-
-  -- blacklist (value string or {reason,source})
-  SetDefault("blacklist", {})
-  SetDefault("historyBoosts", {})
-
-  SetDefault("deathroll", { active=false, upper=0, lastRoller=nil, m1Adj=0, m2Adj=0 })
-
-  SetDefault("mage1Name","")
-  SetDefault("mage2Name","")
-
-  -- last known group members (for join alerts)
-  SetDefault("_lastGroupSet", {})
+  SetDefault("overlayEnabled",true) SetDefault("overlayAlpha",0.95) SetDefault("mainAlpha",0.95)
+  SetDefault("postWelcomeOnLogin",true) SetDefault("pricePer5",360*10000) SetDefault("runsPerPack",5)
+  SetDefault("dungeon","X Boost") SetDefault("mage2Pct",35) SetDefault("soloBoost",false)
+  SetDefault("sync",{enabled=false,locked=false,trusted={},autoTrust=true}) SetDefault("boostInProgress",false)
+  SetDefault("roster",{}) SetDefault("boosterGoldStart",{}) SetDefault("boosterGoldCurrent",{})
+  SetDefault("runsLog",{}) SetDefault("itemsValueSession",0) SetDefault("greyPool",0) SetDefault("vendorGoldSession",0)
+  SetDefault("lootedCoinSession",0) SetDefault("lootEvents",{}) SetDefault("coinEvents",{}) SetDefault("deMarked",{})
+  SetDefault("matTally",{cloth={},herbs={},ench={}}) SetDefault("_seen",{loot={},coin={},paid={}})
+  SetDefault("blacklist",{}) SetDefault("historyBoosts",{}) SetDefault("deathroll",{active=false,upper=0,lastRoller=nil,m1Adj=0,m2Adj=0})
+  SetDefault("mage1Name","") SetDefault("mage2Name","") SetDefault("_lastGroupSet",{})
 end
 
 ------------------------------------------------------------------------
@@ -77,265 +37,90 @@ end
 ------------------------------------------------------------------------
 local function now() return time() end
 local function clamp(v,a,b) if v<a then return a elseif v>b then return b else return v end end
-local function fmtCoins(c)
-  c = math.floor(tonumber(c) or 0)
-  local g = math.floor(c/10000); local s = math.floor((c%10000)/100); local cc=c%100
-  return ("%dg %ds %dc"):format(g,s,cc)
-end
-local function fmtHMS(sec)
-  sec = math.max(0, tonumber(sec) or 0)
-  local h=math.floor(sec/3600); local m=math.floor((sec%3600)/60); local s=sec%60
-  return ("%d:%02d:%02d"):format(h,m,s)
-end
-local function printLocal(msg)
-  (DEFAULT_CHAT_FRAME or ChatFrame1):AddMessage("|cff00c0ffBoostSplit:|r "..(msg or ""))
-end
+local function fmtCoins(c) c=math.floor(tonumber(c) or 0) local g=math.floor(c/10000) local s=math.floor((c%10000)/100) local cc=c%100 return ("%dg %ds %dc"):format(g,s,cc) end
+local function fmtHMS(sec) sec=math.max(0,tonumber(sec) or 0) local h=math.floor(sec/3600) local m=math.floor((sec%3600)/60) local s=sec%60 return ("%d:%02d:%02d"):format(h,m,s) end
+local function printLocal(msg) (DEFAULT_CHAT_FRAME or ChatFrame1):AddMessage("|cff00c0ffBoostSplit:|r "..(msg or "")) end
+local function FullName(name,realm) if not name or name=="" then return nil end if realm and realm~="" then return name.."-"..realm end return name end
+local function MyNameRealm() local n,r=UnitFullName("player") return FullName(n,r) end
 
--- Clean "Name-Realm" maker (realm may be nil or "")
-local function FullName(name, realm)
-  if not name or name == "" then return nil end
-  if realm and realm ~= "" then return name.."-"..realm end
-  return name
-end
-local function MyNameRealm() local n, r = UnitFullName("player"); return FullName(n, r) end
+-- Simple price stub
+function BS_GetItemMarketPrice(link) local _,_,_,_,_,_,_,_,_,_,vendor=GetItemInfo(link) vendor=vendor or 0 return vendor*2 end
 
--- AH price stub (replace with your AH lib if available)
-function BS_GetItemMarketPrice(link)
-  local _,_,_,_,_,_,_,_,_,_,vendor = GetItemInfo(link)
-  vendor = vendor or 0
-  return vendor*2
-end
-
--- Dungeons list
-local DUNGEONS = {
-  "X Boost","Ragefire Chasm","Deadmines","Wailing Caverns","Shadowfang Keep",
-  "Blackfathom Deeps","Stormwind Stockade","Gnomeregan","Razorfen Kraul",
-  "Scarlet Monastery","Razorfen Downs","Uldaman","Zul'Farrak","Maraudon",
-  "Sunken Temple","Blackrock Depths","Lower Blackrock Spire","Upper Blackrock Spire",
-  "Stratholme","Scholomance","Dire Maul",
-}
+local DUNGEONS={"X Boost","Ragefire Chasm","Deadmines","Wailing Caverns","Shadowfang Keep","Blackfathom Deeps","Stormwind Stockade","Gnomeregan","Razorfen Kraul","Scarlet Monastery","Razorfen Downs","Uldaman","Zul'Farrak","Maraudon","Sunken Temple","Blackrock Depths","Lower Blackrock Spire","Upper Blackrock Spire","Stratholme","Scholomance","Dire Maul"}
 
 ------------------------------------------------------------------------
--- Simple serializer
+-- Serializer
 ------------------------------------------------------------------------
-function NS.Serialize(t)
-  local function ser(v)
-    local tp=type(v)
-    if tp=="number" then return tostring(v)
-    elseif tp=="boolean" then return v and "b1" or "b0"
-    elseif tp=="string" then return "s"..v:gsub("|","||")
-    elseif tp=="table" then
-      local out={"{"}; for k,val in pairs(v) do out[#out+1]="["..ser(k).."]="..ser(val)..";" end
-      out[#out+1]="}"; return table.concat(out)
-    end; return "n"
-  end; return ser(t)
-end
-function NS.Deserialize(s)
-  if type(s)~="string" then return nil end
-  local i=1
-  local function parse()
-    if i>#s then return nil end
-    local c=s:sub(i,i)
-    if c=="{" then i=i+1; local t={}
-      while s:sub(i,i)~="}" do
-        i=i+1; local k=parse(); i=i+1
-        i=i+1; local v=parse(); i=i+1
-        t[k]=v
-      end; i=i+1; return t
-    elseif c=="s" then
-      i=i+1; local j=i
-      while j<=#s do if s:sub(j,j)=="|" and s:sub(j+1,j+1)~="|" then break end; j=j+1 end
-      local raw=s:sub(i,j-1):gsub("||","|"); i=j; return raw
-    elseif c=="b" then i=i+1; local d=s:sub(i,i); i=i+1; return d=="1"
-    elseif c:match("[%d%-]") then local j=i; while s:sub(j,j):match("[%d%-%.]") do j=j+1 end
-      local n=tonumber(s:sub(i,j-1)); i=j; return n
-    else i=i+1; return nil end
-  end
-  local ok,v=pcall(parse); if ok then return v end
-end
+function NS.Serialize(t) local function ser(v) local tp=type(v) if tp=="number" then return tostring(v) elseif tp=="boolean" then return v and "b1" or "b0" elseif tp=="string" then return "s"..v:gsub("|","||") elseif tp=="table" then local out={"{"} for k,val in pairs(v) do out[#out+1]="["..ser(k).."]="..ser(val)..";" end out[#out+1]="}" return table.concat(out) end return "n" end return ser(t) end
+function NS.Deserialize(s) if type(s)~="string" then return nil end local i=1 local function parse() if i>#s then return nil end local c=s:sub(i,i) if c=="{" then i=i+1 local t={} while s:sub(i,i)~="}" do i=i+1 local k=parse() i=i+1 i=i+1 local v=parse() i=i+1 t[k]=v end i=i+1 return t elseif c=="s" then i=i+1 local j=i while j<=#s do if s:sub(j,j)=="|" and s:sub(j+1,j+1)~="|" then break end j=j+1 end local raw=s:sub(i,j-1):gsub("||","|") i=j return raw elseif c=="b" then i=i+1 local d=s:sub(i,i) i=i+1 return d=="1" elseif c:match("[%d%-]") then local j=i while s:sub(j,j):match("[%d%-%.]") do j=j+1 end local n=tonumber(s:sub(i,j-1)) i=j return n else i=i+1 return nil end end local ok,v=pcall(parse) if ok then return v end end
 
 ------------------------------------------------------------------------
--- Announce (Classic-friendly)
+-- Announce
 ------------------------------------------------------------------------
-local function announce(msg)
-  local line="BoostSplit: "..(msg or "")
-  local chan = DB().announce or "AUTO"
-  local target="PARTY"
-  if chan=="AUTO" then
-    if IsInRaid() then target="RAID"
-    elseif IsInGroup() then target="PARTY"
-    else printLocal(msg); return end
-  else target=chan end
-  SendChatMessage(line,target)
-end
+local function announce(msg) local line="BoostSplit: "..(msg or "") local chan=DB().announce or "AUTO" local target="PARTY" if chan=="AUTO" then if IsInRaid() then target="RAID" elseif IsInGroup() then target="PARTY" else printLocal(msg) return end else target=chan end SendChatMessage(line,target) end
 
 ------------------------------------------------------------------------
--- Sync (no key; trust in-group; optional trusted list)
+-- Sync
 ------------------------------------------------------------------------
-C_ChatInfo.RegisterAddonMessagePrefix(PREFIX)
-C_ChatInfo.RegisterAddonMessagePrefix(PREFIX_R)
-
-NS._syncedPeers = {} -- name->lastSeen
-local function MarkSynced(name) if name then NS._syncedPeers[name]=time() end end
-local function HasFreshPeers(win) win=win or 300; for _,t in pairs(NS._syncedPeers) do if time()-t<win then return true end end; return false end
-
-local function PartyList()
-  local out,seen = {}, {}
-  local function add(unit)
-    if UnitExists(unit) then
-      local n,r = UnitName(unit)
-      local full = FullName(n, r)
-      if full and not seen[full] then seen[full]=true; out[#out+1]=full end
-    end
-  end
-  if IsInRaid() then for i=1,GetNumGroupMembers() do add("raid"..i) end
-  elseif IsInGroup() then add("player"); for i=1,GetNumSubgroupMembers() do add("party"..i) end
-  else add("player") end
-  while #out>5 do table.remove(out) end
-  return out
-end
-
-local function IsSenderInGroup(name)
-  local set = {}
-  for _,n in ipairs(PartyList()) do set[n]=true end
-  return set[name]==true
-end
-
-local function SendPkt(op, tbl)
-  if not DB().sync.enabled then return end
-  tbl = tbl or {}; tbl.op=op
-  local chan = IsInRaid() and "RAID" or "PARTY"
-  C_ChatInfo.SendAddonMessage(PREFIX, NS.Serialize(tbl), chan)
-end
-
--- Realm bus (blacklist)
-local function RealmChanId() local id=GetChannelName(REALM_CHAN); if id and id>0 then return id end end
-local function RealmSend(op,p)
-  local id=RealmChanId(); if not id then return end
-  p=p or {}; p.op=op; p.realm=REALM
-  C_ChatInfo.SendAddonMessage(PREFIX_R, NS.Serialize(p), "CHANNEL", id)
-end
-
--- Blacklist helpers
+C_ChatInfo.RegisterAddonMessagePrefix(PREFIX) C_ChatInfo.RegisterAddonMessagePrefix(PREFIX_R)
+NS._syncedPeers={} local function MarkSynced(name) if name then NS._syncedPeers[name]=time() end end
+local function PartyList() local out,seen={},{} local function add(unit) if UnitExists(unit) then local n,r=UnitName(unit) local full=FullName(n,r) if full and not seen[full] then seen[full]=true out[#out+1]=full end end end if IsInRaid() then for i=1,GetNumGroupMembers() do add("raid"..i) end elseif IsInGroup() then add("player") for i=1,GetNumSubgroupMembers() do add("party"..i) end else add("player") end while #out>5 do table.remove(out) end return out end
+local function IsSenderInGroup(name) local set={} for _,n in ipairs(PartyList()) do set[n]=true end return set[name]==true end
+local function SendPkt(op,tbl) if not DB().sync.enabled then return end tbl=tbl or{} tbl.op=op local chan=IsInRaid() and "RAID" or "PARTY" C_ChatInfo.SendAddonMessage(PREFIX,NS.Serialize(tbl),chan) end
+local function RealmChanId() local id=GetChannelName(REALM_CHAN) if id and id>0 then return id end end
+local function RealmSend(op,p) local id=RealmChanId() if not id then return end p=p or{} p.op=op p.realm=REALM C_ChatInfo.SendAddonMessage(PREFIX_R,NS.Serialize(p),"CHANNEL",id) end
 local function BL_GetReason(entry) if type(entry)=="table" then return entry.reason or "" else return entry or "" end end
 local function BL_GetSource(entry) if type(entry)=="table" then return entry.source or "local" else return "local" end end
-local function BL_Set(name, reason, source) DB().blacklist[name]={reason=reason or "", source=source or "local"} end
+local function BL_Set(name,reason,source) DB().blacklist[name]={reason=reason or "",source=source or "local"} end
 
 ------------------------------------------------------------------------
 -- Deathroll
 ------------------------------------------------------------------------
-local function DR_GetMages()
-  local m1,m2
-  for n,r in pairs(DB().roster) do if r.m1 then m1=n end; if r.m2 then m2=n end end
-  local function base(n) return n and n:gsub("%-.+$","") or nil end
-  return m1,m2, base(m1), base(m2)
-end
+local function DR_GetMages() local m1,m2 for n,r in pairs(DB().roster) do if r.m1 then m1=n end if r.m2 then m2=n end end local function base(n) return n and n:gsub("%-.+$","") or nil end return m1,m2,base(m1),base(m2) end
 local function DR_ResetSession() DB().deathroll={active=false,upper=0,lastRoller=nil,m1Adj=0,m2Adj=0} end
-local function DR_ApplyWin(winnerIsM2)
-  local d=DB().deathroll
-  local loserAdj = winnerIsM2 and (d.m1Adj or 0) or (d.m2Adj or 0)
-  local room = 10 + math.min(0, loserAdj)
-  local delta = math.min(5, room)
-  if delta<=0 then return 0 end
-  if winnerIsM2 then d.m2Adj=(d.m2Adj or 0)+delta; d.m1Adj=(d.m1Adj or 0)-delta
-  else d.m1Adj=(d.m1Adj or 0)+delta; d.m2Adj=(d.m2Adj or 0)-delta end
-  return delta
-end
--- Locale-safe roll parsing
-local ROLL_PATTERN do
-  local fmt = _G.RANDOM_ROLL_RESULT or "%s rolls %d (%d-%d)"
-  fmt = fmt:gsub("([%(%)%[%]%%%.%+%-%*%?%^%$])","%%%1"):gsub("%%%%s","(.+)"):gsub("%%%%d","(%%d+)")
-  ROLL_PATTERN = "^"..fmt.."$"
-end
-local function DR_ParseRoll(msg)
-  local roller, roll, minv, maxv = msg:match(ROLL_PATTERN)
-  if roller then return roller:gsub("%-.+$",""), tonumber(roll), tonumber(minv), tonumber(maxv) end
-end
+local function DR_ApplyWin(winnerIsM2) local d=DB().deathroll local loserAdj=winnerIsM2 and (d.m1Adj or 0) or (d.m2Adj or 0) local room=10+math.min(0,loserAdj) local delta=math.min(5,room) if delta<=0 then return 0 end if winnerIsM2 then d.m2Adj=(d.m2Adj or 0)+delta d.m1Adj=(d.m1Adj or 0)-delta else d.m1Adj=(d.m1Adj or 0)+delta d.m2Adj=(d.m2Adj or 0)-delta end return delta end
+local ROLL_PATTERN do local fmt=_G.RANDOM_ROLL_RESULT or "%s rolls %d (%d-%d)" fmt=fmt:gsub("([%(%)%[%]%%%.%+%-%*%?%^%$])","%%%1"):gsub("%%%%s","(.+)"):gsub("%%%%d","(%%d+)") ROLL_PATTERN="^"..fmt.."$" end
+local function DR_ParseRoll(msg) local roller,roll,minv,maxv=msg:match(ROLL_PATTERN) if roller then return roller:gsub("%-.+$",""),tonumber(roll),tonumber(minv),tonumber(maxv) end end
 
 ------------------------------------------------------------------------
--- (continues… next part will include Roster, Pricing, UI helpers, Overlay, Runs, Tabs, etc.)
+-- Roster & Pricing (continues in Part 2)
 ------------------------------------------------------------------------
 ------------------------------------------------------------------------
 -- Roster & Pricing
 ------------------------------------------------------------------------
 local function EnsureRoster(names)
   local R=DB().roster
-  for _,n in ipairs(names) do
-    if not R[n] then
-      R[n]={m1=false,m2=false,m1f=false,m2f=false,paid=0,done=0}
-    end
-  end
-  for n,_ in pairs(R) do
-    local keep=false
-    for _,pn in ipairs(names) do if pn==n then keep=true break end end
-    if not keep then R[n]=nil end
-  end
+  for _,n in ipairs(names) do if not R[n] then R[n]={m1=false,m2=false,m1f=false,m2f=false,paid=0,done=0} end end
+  for n,_ in pairs(R) do local keep=false for _,pn in ipairs(names) do if pn==n then keep=true break end end if not keep then R[n]=nil end end
 end
 
 local function Buyers()
   local list={}
-  for n,r in pairs(DB().roster) do
-    if not r.m1 and not r.m2 and not r.m1f and not r.m2f then
-      list[#list+1]=n
-    end
-  end
-  table.sort(list)
-  return list
+  for n,r in pairs(DB().roster) do if not r.m1 and not r.m2 and not r.m1f and not r.m2f then list[#list+1]=n end end
+  table.sort(list) return list
 end
 
-local function PricePerRun()
-  local p5=DB().pricePer5 or 0
-  local r=DB().runsPerPack or 5
-  r=r>0 and r or 1
-  return math.floor(p5/r)
-end
+local function PricePerRun() local p5=DB().pricePer5 or 0 local r=DB().runsPerPack or 5 r=r>0 and r or 1 return math.floor(p5/r) end
 
 ------------------------------------------------------------------------
 -- UI Helpers
 ------------------------------------------------------------------------
-local function NoWrap(fs)
-  fs:SetWordWrap(false)
-  if fs.SetNonSpaceWrap then fs:SetNonSpaceWrap(false) end
-  fs:SetMaxLines(1)
-  return fs
-end
-
-local function Cell(parent,x,w,just,font)
-  local fs=parent:CreateFontString(nil,"OVERLAY",font or "GameFontHighlight")
-  fs:SetPoint("LEFT",parent,"LEFT",x,0)
-  fs:SetWidth(w)
-  fs:SetHeight(18)
-  fs:SetJustifyH(just or "LEFT")
-  return NoWrap(fs)
-end
-
+local function NoWrap(fs) fs:SetWordWrap(false) if fs.SetNonSpaceWrap then fs:SetNonSpaceWrap(false) end fs:SetMaxLines(1) return fs end
+local function Cell(parent,x,w,just,font) local fs=parent:CreateFontString(nil,"OVERLAY",font or "GameFontHighlight") fs:SetPoint("LEFT",parent,"LEFT",x,0) fs:SetWidth(w) fs:SetHeight(18) fs:SetJustifyH(just or "LEFT") return NoWrap(fs) end
 local function Section(parent,x,y,w,h,title)
   local f=CreateFrame("Frame",nil,parent,"BackdropTemplate")
-  f:SetPoint("TOPLEFT",x,y)
-  f:SetSize(w,h)
-  f:SetBackdrop({
-    bgFile="Interface\\Buttons\\WHITE8x8",
-    edgeFile="Interface\\Tooltips\\UI-Tooltip-Border",
-    edgeSize=12,
-    insets={left=3,right=3,top=3,bottom=3}
-  })
-  f:SetBackdropColor(0,0,0,0.6)
-  f:SetBackdropBorderColor(0.2,0.6,1,0.9)
-  local cap=f:CreateFontString(nil,"OVERLAY","GameFontNormal")
-  cap:SetPoint("TOPLEFT",8,-6)
-  cap:SetText(title)
-  local body=CreateFrame("Frame",nil,f)
-  body:SetPoint("TOPLEFT",6,-22)
-  body:SetPoint("BOTTOMRIGHT",-6,6)
-  body:SetClipsChildren(true)
-  f.body=body
+  f:SetPoint("TOPLEFT",x,y) f:SetSize(w,h)
+  f:SetBackdrop({bgFile="Interface\\Buttons\\WHITE8x8",edgeFile="Interface\\Tooltips\\UI-Tooltip-Border",edgeSize=12,insets={left=3,right=3,top=3,bottom=3}})
+  f:SetBackdropColor(0,0,0,0.6) f:SetBackdropBorderColor(0.2,0.6,1,0.9)
+  local cap=f:CreateFontString(nil,"OVERLAY","GameFontNormal") cap:SetPoint("TOPLEFT",8,-6) cap:SetText(title)
+  local body=CreateFrame("Frame",nil,f) body:SetPoint("TOPLEFT",6,-22) body:SetPoint("BOTTOMRIGHT",-6,6) body:SetClipsChildren(true) f.body=body
   return f
 end
 
 UI, OVERLAY = {}, {}
 
 ------------------------------------------------------------------------
--- Overlay
+-- Overlay Utils
 ------------------------------------------------------------------------
 local function MakeButtonRed(btn)
   btn:SetNormalTexture("Interface\\Buttons\\UI-Panel-Button-Up")
@@ -346,120 +131,42 @@ local function MakeButtonRed(btn)
   btn:GetPushedTexture():SetVertexColor(0.75,0.10,0.10)
   btn:GetHighlightTexture():SetVertexColor(1.0,0.25,0.25,0.35)
   btn:GetDisabledTexture():SetVertexColor(0.50,0.20,0.20)
-  local fs=btn:GetFontString()
-  if fs then fs:SetTextColor(1,0.96,0.96) end
+  local fs=btn:GetFontString() if fs then fs:SetTextColor(1,0.96,0.96) end
 end
 
-StaticPopupDialogs["BOOSTSPLIT_REFUND_CONFIRM"]={
-  text="Refund Boost?\n\nThis will compute refunds for paid but unused runs and announce payouts to %s.",
-  button1="Confirm", button2="Cancel",
-  OnAccept=function() if NS.RefundBoost then NS.RefundBoost() end end,
-  timeout=0,whileDead=true,hideOnEscape=true,preferredIndex=3,
-}
-
-StaticPopupDialogs["BOOSTSPLIT_RUNS_EXHAUSTED"]={
-  text="Reminder: the following buyers have used all paid runs:\n\n|cffffd200%s|r\n\nPrice/run: %s\nTrade for more gold before the next reset.",
-  button1="Whisper All", button2="OK",
-  OnAccept=function(self,data)
-    local list=data or {}
-    local ppr=PricePerRun()
-    local dung=DB().dungeon or "this boost"
-    for _,full in ipairs(list) do
-      local base=full:gsub("%-.+$","")
-      local msg=("You’ve just finished your paid runs for %s. Price/run %s. Trade me if you want to continue."):format(dung,fmtCoins(ppr))
-      SendChatMessage(msg,"WHISPER",nil,base)
-    end
-  end,
-  timeout=0,whileDead=true,hideOnEscape=true,preferredIndex=3,
-}
+StaticPopupDialogs["BOOSTSPLIT_REFUND_CONFIRM"]={ text="Refund Boost?\n\nThis will compute refunds for paid but unused runs and announce payouts to %s.", button1="Confirm", button2="Cancel", OnAccept=function() if NS.RefundBoost then NS.RefundBoost() end end, timeout=0,whileDead=true,hideOnEscape=true,preferredIndex=3 }
+StaticPopupDialogs["BOOSTSPLIT_RUNS_EXHAUSTED"]={ text="Reminder: the following buyers have used all paid runs:\n\n|cffffd200%s|r\n\nPrice/run: %s\nTrade for more gold before the next reset.", button1="Whisper All", button2="OK", OnAccept=function(self,data) local list=data or{} local ppr=PricePerRun() local dung=DB().dungeon or "this boost" for _,full in ipairs(list) do local base=full:gsub("%-.+$","") local msg=("You’ve just finished your paid runs for %s. Price/run %s. Trade me if you want to continue."):format(dung,fmtCoins(ppr)) SendChatMessage(msg,"WHISPER",nil,base) end end, timeout=0,whileDead=true,hideOnEscape=true,preferredIndex=3 }
 
 ------------------------------------------------------------------------
 -- End Run Logic
 ------------------------------------------------------------------------
-local function AnyRefundsDue()
-  local owed=NS.CalcRefunds and NS.CalcRefunds() or {}
-  for _ in pairs(owed) do return true end
-  return false
-end
-
-local function ShowRefundConfirm()
-  if not AnyRefundsDue() then printLocal("No refunds are due."); return end
-  StaticPopup_Show("BOOSTSPLIT_REFUND_CONFIRM",DB().announce or "AUTO")
-end
+local function AnyRefundsDue() local owed=NS.CalcRefunds and NS.CalcRefunds() or{} for _ in pairs(owed) do return true end return false end
+local function ShowRefundConfirm() if not AnyRefundsDue() then printLocal("No refunds are due.") return end StaticPopup_Show("BOOSTSPLIT_REFUND_CONFIRM",DB().announce or "AUTO") end
 
 local function EndRun()
-  local tEnd=now()
-  local start=tEnd-1
-  if DB().runsLog[1] and DB().runsLog[1].endts then start=DB().runsLog[1].endts end
-  local dur=tEnd-start
-  local new={start=start,endts=tEnd,dur=dur,kills=0,value=0,coin=0,excluded=false}
-  table.insert(DB().runsLog,1,new)
-  while #DB().runsLog>15 do table.remove(DB().runsLog) end
+  local tEnd=now() local start=tEnd-1 if DB().runsLog[1] and DB().runsLog[1].endts then start=DB().runsLog[1].endts end
+  local dur=tEnd-start local new={start=start,endts=tEnd,dur=dur,kills=0,value=0,coin=0,excluded=false}
+  table.insert(DB().runsLog,1,new) while #DB().runsLog>15 do table.remove(DB().runsLog) end
+  local sumCoin=0 for _,ev in ipairs(DB().coinEvents or{}) do if ev.t>=start and ev.t<=tEnd then sumCoin=sumCoin+(ev.copper or 0) end end new.coin=sumCoin
 
-  local sumCoin=0
-  for _,ev in ipairs(DB().coinEvents or {}) do
-    if ev.t>=start and ev.t<=tEnd then sumCoin=sumCoin+(ev.copper or 0) end
-  end
-  new.coin=sumCoin
+  local ppr=PricePerRun() local prevLeft={} for _,n in ipairs(Buyers()) do local r=DB().roster[n] local paidRuns=math.floor((r.paid or 0)/ppr) prevLeft[n]=math.max(0,paidRuns-(r.done or 0)) end
+  for n,r in pairs(DB().roster) do if not (r.m1 or r.m2 or r.m1f or r.m2f) then local paidRuns=math.floor((r.paid or 0)/ppr) local left=math.max(0,paidRuns-(r.done or 0)) if left>0 then r.done=(r.done or 0)+1 end end end
 
-  local ppr=PricePerRun()
-  local prevLeft={}
-  for _,n in ipairs(Buyers()) do
-    local r=DB().roster[n]
-    local paidRuns=math.floor((r.paid or 0)/ppr)
-    prevLeft[n]=math.max(0,paidRuns-(r.done or 0))
-  end
+  if UI.RefreshRuns then UI.RefreshRuns() end if UI.RefreshParty then UI.RefreshParty() end if OVERLAY.Refresh then OVERLAY.Refresh() end
 
-  for n,r in pairs(DB().roster) do
-    if not (r.m1 or r.m2 or r.m1f or r.m2f) then
-      local paidRuns=math.floor((r.paid or 0)/ppr)
-      local left=math.max(0,paidRuns-(r.done or 0))
-      if left>0 then r.done=(r.done or 0)+1 end
-    end
-  end
+  local lines={} lines[#lines+1]=("Reset → %s — completion:"):format(DB().dungeon or "X Boost")
+  for _,n in ipairs(Buyers()) do local r=DB().roster[n] local paidRuns=math.floor((r.paid or 0)/ppr) local done=r.done or 0 local left=math.max(0,paidRuns-done) lines[#lines+1]=("%s  done %d/%d (left %d)"):format(n,done,paidRuns,left) end for _,l in ipairs(lines) do announce(l) end
 
-  if UI.RefreshRuns then UI.RefreshRuns() end
-  if UI.RefreshParty then UI.RefreshParty() end
-  if OVERLAY.Refresh then OVERLAY.Refresh() end
+  local cut=now()-3600 local times={} for _,e in ipairs(DB().runsLog) do if not e.excluded and e.endts and e.endts>=cut then times[#times+1]=e.endts end end table.sort(times)
+  if #times==5 then local ready=times[1]+3600 local rem=ready-now() if rem>0 then announce("Instance cap reached (5/5). Next entry in "..fmtHMS(rem)..".") end end
 
-  local lines={}
-  lines[#lines+1]=("Reset → %s — completion:"):format(DB().dungeon or "X Boost")
-  for _,n in ipairs(Buyers()) do
-    local r=DB().roster[n]
-    local paidRuns=math.floor((r.paid or 0)/ppr)
-    local done=r.done or 0
-    local left=math.max(0,paidRuns-done)
-    lines[#lines+1]=("%s  done %d/%d (left %d)"):format(n,done,paidRuns,left)
-  end
-  for _,l in ipairs(lines) do announce(l) end
-
-  local cut=now()-3600
-  local times={}
-  for _,e in ipairs(DB().runsLog) do
-    if not e.excluded and e.endts and e.endts>=cut then
-      times[#times+1]=e.endts
-    end
-  end
-  table.sort(times)
-  if #times==5 then
-    local ready=times[1]+3600
-    local rem=ready-now()
-    if rem>0 then announce("Instance cap reached (5/5). Next entry in "..fmtHMS(rem)..".") end
-  end
-
-  local exhaustedNow={}
-  for _,n in ipairs(Buyers()) do
-    local r=DB().roster[n]
-    local paidRuns=math.floor((r.paid or 0)/ppr)
-    local left=math.max(0,paidRuns-(r.done or 0))
-    if (prevLeft[n] or 0)==1 and left==0 then
-      table.insert(exhaustedNow,n)
-    end
-  end
-  if #exhaustedNow>0 then
-    StaticPopup_Show("BOOSTSPLIT_RUNS_EXHAUSTED",table.concat(exhaustedNow,", "),fmtCoins(ppr),exhaustedNow)
-  end
+  local exhaustedNow={} for _,n in ipairs(Buyers()) do local r=DB().roster[n] local paidRuns=math.floor((r.paid or 0)/ppr) local left=math.max(0,paidRuns-(r.done or 0)) if (prevLeft[n] or 0)==1 and left==0 then table.insert(exhaustedNow,n) end end
+  if #exhaustedNow>0 then StaticPopup_Show("BOOSTSPLIT_RUNS_EXHAUSTED",table.concat(exhaustedNow,", "),fmtCoins(ppr),exhaustedNow) end
 end
+
+------------------------------------------------------------------------
+-- Overlay Window (continues in Part 3)
+------------------------------------------------------------------------
 ------------------------------------------------------------------------
 -- Overlay Window
 ------------------------------------------------------------------------
@@ -468,21 +175,13 @@ local function BuildOverlay()
   local f=CreateFrame("Frame","BoostSplitOverlay",UIParent,"BackdropTemplate")
   f:SetSize(580,240)
   f:SetPoint("CENTER",0,120)
-  f:SetBackdrop({
-    bgFile="Interface\\DialogFrame\\UI-DialogBox-Background",
-    edgeFile="Interface\\Tooltips\\UI-Tooltip-Border",
-    edgeSize=12,
-    insets={left=3,right=3,top=3,bottom=3}
-  })
+  f:SetBackdrop({bgFile="Interface\\DialogFrame\\UI-DialogBox-Background",edgeFile="Interface\\Tooltips\\UI-Tooltip-Border",edgeSize=12,insets={left=3,right=3,top=3,bottom=3}})
   f:SetBackdropColor(0,0,0,DB().overlayAlpha or 0.95)
-  f:SetMovable(true); f:EnableMouse(true)
+  f:SetMovable(true) f:EnableMouse(true)
 
-  f:SetResizable(true)
-  f:SetMinResize(420,200)
-  f:SetMaxResize(900,600)
+  f:SetResizable(true) f:SetMinResize(420,200) f:SetMaxResize(900,600)
   local sizer=CreateFrame("Button",nil,f)
-  sizer:SetPoint("BOTTOMRIGHT",-2,2)
-  sizer:SetSize(16,16)
+  sizer:SetPoint("BOTTOMRIGHT",-2,2) sizer:SetSize(16,16)
   sizer:SetNormalTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
   sizer:SetHighlightTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight")
   sizer:SetPushedTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Down")
@@ -494,173 +193,96 @@ local function BuildOverlay()
   f:SetScript("OnDragStop",f.StopMovingOrSizing)
 
   local brand=f:CreateFontString(nil,"OVERLAY","GameFontHighlightLarge")
-  brand:SetPoint("TOP",0,-6)
-  brand:SetText("BoostingSplits")
+  brand:SetPoint("TOP",0,-6) brand:SetText("BoostingSplits")
 
   local mainBtn=CreateFrame("Button",nil,f,"UIPanelButtonTemplate")
-  mainBtn:SetSize(70,20)
-  mainBtn:SetPoint("TOPLEFT",8,-8)
-  mainBtn:SetText("Main")
+  mainBtn:SetSize(70,20) mainBtn:SetPoint("TOPLEFT",8,-8) mainBtn:SetText("Main")
   mainBtn:SetScript("OnClick",function() if BoostSplitFrame then BoostSplitFrame:Show() end end)
 
   local drBtn=CreateFrame("Button",nil,f,"UIPanelButtonTemplate")
-  drBtn:SetSize(120,20)
-  drBtn:SetPoint("TOPRIGHT",-8,-8)
-  drBtn:SetText("Deathroll Cut")
-
+  drBtn:SetSize(120,20) drBtn:SetPoint("TOPRIGHT",-8,-8) drBtn:SetText("Deathroll Cut")
   local drWin=CreateFrame("Frame",nil,f,"BackdropTemplate")
-  drWin:SetSize(360,130)
-  drWin:SetPoint("TOPRIGHT",-8,-34)
-  drWin:SetBackdrop({
-    bgFile="Interface\\Buttons\\WHITE8x8",
-    edgeFile="Interface\\Tooltips\\UI-Tooltip-Border",
-    edgeSize=12,
-    insets={left=3,right=3,top=3,bottom=3}
-  })
-  drWin:SetBackdropColor(0,0,0,0.9)
-  drWin:Hide()
+  drWin:SetSize(360,130) drWin:SetPoint("TOPRIGHT",-8,-34)
+  drWin:SetBackdrop({bgFile="Interface\\Buttons\\WHITE8x8",edgeFile="Interface\\Tooltips\\UI-Tooltip-Border",edgeSize=12,insets={left=3,right=3,top=3,bottom=3}})
+  drWin:SetBackdropColor(0,0,0,0.9) drWin:Hide()
 
   local drTitle=drWin:CreateFontString(nil,"OVERLAY","GameFontNormalLarge")
-  drTitle:SetPoint("TOPLEFT",8,-6)
-  drTitle:SetText("Deathroll Cut")
-
+  drTitle:SetPoint("TOPLEFT",8,-6) drTitle:SetText("Deathroll Cut")
   local drInfo=drWin:CreateFontString(nil,"OVERLAY","GameFontHighlight")
-  drInfo:SetPoint("TOPLEFT",8,-28)
-  drInfo:SetWidth(336)
-  drInfo:SetJustifyH("LEFT")
-
+  drInfo:SetPoint("TOPLEFT",8,-28) drInfo:SetWidth(336) drInfo:SetJustifyH("LEFT")
   local drClose=CreateFrame("Button",nil,drWin,"UIPanelCloseButton")
   drClose:SetPoint("TOPRIGHT",2,-2)
 
-  drBtn:SetScript("OnClick",function()
-    drWin:SetShown(not drWin:IsShown())
-    if OVERLAY.DR_RefreshPanel then OVERLAY.DR_RefreshPanel() end
-  end)
+  drBtn:SetScript("OnClick",function() drWin:SetShown(not drWin:IsShown()) if OVERLAY.DR_RefreshPanel then OVERLAY.DR_RefreshPanel() end end)
   drClose:SetScript("OnClick",function() drWin:Hide() end)
 
-  local lines={}
-  for i=1,7 do
-    local fs=f:CreateFontString(nil,"OVERLAY","GameFontHighlight")
-    fs:SetPoint("TOPLEFT",12,-30-(i-1)*18)
-    fs:SetPoint("RIGHT",-12,0)
-    fs:SetJustifyH("LEFT")
-    fs:SetWordWrap(false)
-    lines[i]=fs
-  end
+  local lines={} for i=1,7 do local fs=f:CreateFontString(nil,"OVERLAY","GameFontHighlight") fs:SetPoint("TOPLEFT",12,-30-(i-1)*18) fs:SetPoint("RIGHT",-12,0) fs:SetJustifyH("LEFT") fs:SetWordWrap(false) lines[i]=fs end
 
   local refund=CreateFrame("Button",nil,f,"UIPanelButtonTemplate")
-  refund:SetSize(140,22)
-  refund:SetPoint("BOTTOM",f,"BOTTOM",-76,8)
-  refund:SetText("Refund Boost")
-  MakeButtonRed(refund)
-
+  refund:SetSize(140,22) refund:SetPoint("BOTTOM",f,"BOTTOM",-76,8) refund:SetText("Refund Boost") MakeButtonRed(refund)
   local reset=CreateFrame("Button",nil,f,"UIPanelButtonTemplate")
-  reset:SetSize(140,22)
-  reset:SetPoint("BOTTOM",f,"BOTTOM",76,8)
-  reset:SetText("Reset Instance")
+  reset:SetSize(140,22) reset:SetPoint("BOTTOM",f,"BOTTOM",76,8) reset:SetText("Reset Instance")
 
   refund:SetScript("OnClick",ShowRefundConfirm)
-  reset:SetScript("OnClick",function() EndRun(); ResetInstances() end)
+  reset:SetScript("OnClick",function() EndRun() ResetInstances() end)
 
   function OVERLAY.Refresh()
     local i=1
-    for _,n in ipairs(Buyers()) do
-      if i>#lines then break end
-      local r=DB().roster[n]
-      local ppr=PricePerRun()
-      local paidRuns=math.floor((r.paid or 0)/ppr)
-      local left=math.max(0,paidRuns-(r.done or 0))
-      lines[i]:SetText(("%s — %d left"):format(n,left))
-      i=i+1
-    end
+    for _,n in ipairs(Buyers()) do if i>#lines then break end local r=DB().roster[n] local ppr=PricePerRun() local paidRuns=math.floor((r.paid or 0)/ppr) local left=math.max(0,paidRuns-(r.done or 0)) lines[i]:SetText(("%s — %d left"):format(n,left)) i=i+1 end
     for j=i,#lines do lines[j]:SetText("") end
-
     if OVERLAY.DR_RefreshPanel then
-      local d=DB().deathroll or {}
-      local m1,m2,m1b,m2b=DR_GetMages()
-      if not (m1 and m2) then
-        drInfo:SetText("Tick 1st Mage and 2nd Mage in Settings → Boosters.")
-      elseif not d.active then
-        drInfo:SetText(("Adj (M1/M2): %+d%% / %+d%%\nStart: /roll 5000, then alternate /roll <last>.\nRolling 1 loses 5%% (max 10%%)."):format(d.m1Adj or 0,d.m2Adj or 0))
-      else
-        drInfo:SetText(("Adj (M1/M2): %+d%% / %+d%%\nIn progress — last: |cff80ff80%s|r\nNext max: |cffffd200%d|r"):format(d.m1Adj or 0,d.m2Adj or 0,d.lastRoller or "?",d.upper or 0))
-      end
+      local d=DB().deathroll or {} local m1,m2,m1b,m2b=DR_GetMages()
+      if not (m1 and m2) then drInfo:SetText("Tick 1st Mage and 2nd Mage in Settings → Boosters.")
+      elseif not d.active then drInfo:SetText(("Adj (M1/M2): %+d%% / %+d%%\nStart: /roll 5000, then alternate /roll <last>. Rolling 1 loses 5%% (max 10%%)."):format(d.m1Adj or 0,d.m2Adj or 0))
+      else drInfo:SetText(("Adj (M1/M2): %+d%% / %+d%%\nIn progress — last: |cff80ff80%s|r\nNext max: |cffffd200%d|r"):format(d.m1Adj or 0,d.m2Adj or 0,d.lastRoller or "?",d.upper or 0)) end
     end
   end
-
   OVERLAY.DR_RefreshPanel=function() if drWin:IsShown() then OVERLAY.Refresh() end end
   BoostSplitOverlay=f
 end
 
 ------------------------------------------------------------------------
--- Main Window + Tabs
+-- Main Window (with tabs)
 ------------------------------------------------------------------------
 local panels={}
 local function BuildMain()
   if BoostSplitFrame then return end
   local frame=CreateFrame("Frame","BoostSplitFrame",UIParent,"BackdropTemplate")
-  frame:SetSize(1020,670)
-  frame:SetPoint("CENTER")
-  frame:SetBackdrop({
-    bgFile="Interface\\DialogFrame\\UI-DialogBox-Background",
-    edgeFile="Interface\\Tooltips\\UI-Tooltip-Border",
-    edgeSize=16,
-    insets={left=5,right=5,top=5,bottom=5}
-  })
+  frame:SetSize(1020,670) frame:SetPoint("CENTER")
+  frame:SetBackdrop({bgFile="Interface\\DialogFrame\\UI-DialogBox-Background",edgeFile="Interface\\Tooltips\\UI-Tooltip-Border",edgeSize=16,insets={left=5,right=5,top=5,bottom=5}})
   frame:SetBackdropColor(0,0,0,DB().mainAlpha or 0.95)
-  frame:EnableMouse(true)
-  frame:SetMovable(true)
-  frame:RegisterForDrag("LeftButton")
-  frame:SetScript("OnDragStart",frame.StartMoving)
-  frame:SetScript("OnDragStop",frame.StopMovingOrSizing)
+  frame:EnableMouse(true) frame:SetMovable(true)
+  frame:RegisterForDrag("LeftButton") frame:SetScript("OnDragStart",frame.StartMoving) frame:SetScript("OnDragStop",frame.StopMovingOrSizing)
   frame:EnableKeyboard(false)
 
   local title=frame:CreateFontString(nil,"OVERLAY","GameFontHighlightLarge")
-  title:SetPoint("TOP",0,-8)
-  title:SetText("BoostingSplits\n|cff88ccff: by fishfinder|r")
-
+  title:SetPoint("TOP",0,-8) title:SetText("BoostingSplits\n|cff88ccff: by fishfinder|r")
   local close=CreateFrame("Button",nil,frame,"UIPanelCloseButton")
   close:SetPoint("TOPRIGHT",2,-2)
 
   local tabNames={"Main","Party","Runs","Blacklist","Settings","Loot Log","History"}
   for i=1,#tabNames do
     local b=CreateFrame("Button",nil,frame,"UIPanelButtonTemplate")
-    b:SetSize(120,22)
-    b:SetPoint("TOPLEFT",12+(i-1)*122,-56)
-    b:SetText(tabNames[i])
-    panels[i]=CreateFrame("Frame",nil,frame)
-    panels[i]:SetAllPoints()
-    panels[i]:Hide()
-    b:SetScript("OnClick",function()
-      for j=1,#panels do panels[j]:Hide() end
-      panels[i]:Show()
-    end)
+    b:SetSize(120,22) b:SetPoint("TOPLEFT",12+(i-1)*122,-56) b:SetText(tabNames[i])
+    panels[i]=CreateFrame("Frame",nil,frame) panels[i]:SetAllPoints() panels[i]:Hide()
+    b:SetScript("OnClick",function() for j=1,#panels do panels[j]:Hide() end panels[i]:Show() end)
   end
   panels[1]:Show()
+
   -------------------------------------------------- Main tab: Summary + Pricing + Actions
   do
     local p=panels[1]
     local sum=Section(p,12,-88,996,120,"Summary (live)")
     local sb=sum.body
-    local sM1=Cell(sb,6,480,"LEFT","GameFontHighlight"); sM1:SetPoint("TOPLEFT",6,-10)
-    local sM2=Cell(sb,6,480,"LEFT","GameFontHighlight"); sM2:SetPoint("TOPLEFT",6,-34)
-    local sPot=Cell(sb,6,960,"LEFT","GameFontNormalLarge"); sPot:SetPoint("TOPLEFT",6,-64); sPot:SetTextColor(1,0.9,0.2)
+    local sM1=Cell(sb,6,480,"LEFT","GameFontHighlight") sM1:SetPoint("TOPLEFT",6,-10)
+    local sM2=Cell(sb,6,480,"LEFT","GameFontHighlight") sM2:SetPoint("TOPLEFT",6,-34)
+    local sPot=Cell(sb,6,960,"LEFT","GameFontNormalLarge") sPot:SetPoint("TOPLEFT",6,-64) sPot:SetTextColor(1,0.9,0.2)
 
-    local function runsCount()
-      local n=0
-      for _,e in ipairs(DB().runsLog or {}) do
-        if not e.excluded and e.endts then n=n+1 end
-      end
-      return n
-    end
-
+    local function runsCount() local n=0 for _,e in ipairs(DB().runsLog or{}) do if not e.excluded and e.endts then n=n+1 end end return n end
     local function friendCompPerFriend() return PricePerRun()*runsCount() end
-
     local function estSplit()
       local traded=0
-      for n,r in pairs(DB().roster) do
-        if not (r.m1 or r.m2 or r.m1f or r.m2f) then traded=traded+(r.paid or 0) end
-      end
+      for n,r in pairs(DB().roster) do if not (r.m1 or r.m2 or r.m1f or r.m2f) then traded=traded+(r.paid or 0) end end
       local vendorAdd=DB().includeVendorInSplit and (DB().vendorGoldSession or 0) or 0
       local marketAdd=DB().includeMarketValueInSplit and ((DB().itemsValueSession or 0)+(DB().greyPool or 0)) or 0
       local pot=traded+vendorAdd+marketAdd
@@ -676,17 +298,11 @@ local function BuildMain()
       local m2Pay=pot-m1Pay
 
       local f1,f2=0,0
-      for _,r in pairs(DB().roster) do
-        if r.m1f then f1=f1+1 elseif r.m2f then f2=f2+1 end
-      end
+      for _,r in pairs(DB().roster) do if r.m1f then f1=f1+1 elseif r.m2f then f2=f2+1 end end
       local diff=f1-f2
-      if diff~=0 then
-        local comp=math.abs(diff)*friendCompPerFriend()
-        if diff>0 then
-          local t=math.min(comp,m1Pay); m1Pay=m1Pay-t; m2Pay=m2Pay+t
-        else
-          local t=math.min(comp,m2Pay); m2Pay=m2Pay-t; m1Pay=m1Pay+t
-        end
+      if diff~=0 then local comp=math.abs(diff)*friendCompPerFriend()
+        if diff>0 then local t=math.min(comp,m1Pay) m1Pay=m1Pay-t m2Pay=m2Pay+t
+        else local t=math.min(comp,m2Pay) m2Pay=m2Pay-t m1Pay=m1Pay+t end
       end
       return pot,m1Pay,m2Pay
     end
@@ -703,203 +319,159 @@ local function BuildMain()
       sPot:SetText(("Pot: %s"):format(fmtCoins(pot)))
     end
 
-    -- Pricing Section
     local pricing=Section(p,12,-218,470,160,"Pricing")
     local s=pricing.body
-    local l1=s:CreateFontString(nil,"OVERLAY","GameFontNormal"); l1:SetPoint("TOPLEFT",6,-6); l1:SetText("Price per 5:")
-    local e1=CreateFrame("EditBox",nil,s,"InputBoxTemplate"); e1:SetPoint("LEFT",l1,"RIGHT",8,0); e1:SetSize(80,20); e1:SetNumeric(true)
-    local l2=s:CreateFontString(nil,"OVERLAY","GameFontNormal"); l2:SetPoint("TOPLEFT",6,-36); l2:SetText("Runs:")
-    local e2=CreateFrame("EditBox",nil,s,"InputBoxTemplate"); e2:SetPoint("LEFT",l2,"RIGHT",8,0); e2:SetSize(40,20); e2:SetNumeric(true)
-    local l3=s:CreateFontString(nil,"OVERLAY","GameFontNormal"); l3:SetPoint("TOPLEFT",6,-66); l3:SetText("Price per run:")
-    local pprFS=s:CreateFontString(nil,"OVERLAY","GameFontHighlight"); pprFS:SetPoint("LEFT",l3,"RIGHT",8,0)
-    local save=CreateFrame("Button",nil,s,"UIPanelButtonTemplate"); save:SetSize(120,20); save:SetPoint("TOPLEFT",6,-96); save:SetText("Save Inputs")
+    local l1=s:CreateFontString(nil,"OVERLAY","GameFontNormal") l1:SetPoint("TOPLEFT",6,-6) l1:SetText("Price per 5:")
+    local e1=CreateFrame("EditBox",nil,s,"InputBoxTemplate") e1:SetPoint("LEFT",l1,"RIGHT",8,0) e1:SetSize(80,20) e1:SetNumeric(true)
+    local l2=s:CreateFontString(nil,"OVERLAY","GameFontNormal") l2:SetPoint("TOPLEFT",6,-36) l2:SetText("Runs:")
+    local e2=CreateFrame("EditBox",nil,s,"InputBoxTemplate") e2:SetPoint("LEFT",l2,"RIGHT",8,0) e2:SetSize(40,20) e2:SetNumeric(true)
+    local l3=s:CreateFontString(nil,"OVERLAY","GameFontNormal") l3:SetPoint("TOPLEFT",6,-66) l3:SetText("Price per run:")
+    local pprFS=s:CreateFontString(nil,"OVERLAY","GameFontHighlight") pprFS:SetPoint("LEFT",l3,"RIGHT",8,0)
+    local save=CreateFrame("Button",nil,s,"UIPanelButtonTemplate") save:SetSize(120,20) save:SetPoint("TOPLEFT",6,-96) save:SetText("Save Inputs")
 
-    local function refreshPPR()
-      local p5g=tonumber(e1:GetNumber()) or 0
-      local runs=tonumber(e2:GetNumber()) or 1
-      if runs<1 then runs=1 end
-      pprFS:SetText(fmtCoins(math.floor((p5g*10000)/runs)))
-    end
-    e1:SetNumber((DB().pricePer5 or 0)/10000)
-    e2:SetNumber(DB().runsPerPack or 5)
-    refreshPPR()
-    e1:SetScript("OnTextChanged",refreshPPR)
-    e2:SetScript("OnTextChanged",refreshPPR)
-    save:SetScript("OnClick",function()
-      DB().pricePer5=math.max(0,e1:GetNumber() or 0)*10000
-      DB().runsPerPack=clamp(e2:GetNumber() or 5,1,50)
-      printLocal("Saved price/runs.")
-      if UI.RefreshSummary then UI.RefreshSummary() end
-    end)
+    local function refreshPPR() local p5g=tonumber(e1:GetNumber()) or 0 local runs=tonumber(e2:GetNumber()) or 1 if runs<1 then runs=1 end pprFS:SetText(fmtCoins(math.floor((p5g*10000)/runs))) end
+    e1:SetNumber((DB().pricePer5 or 0)/10000) e2:SetNumber(DB().runsPerPack or 5) refreshPPR()
+    e1:SetScript("OnTextChanged",refreshPPR) e2:SetScript("OnTextChanged",refreshPPR)
+    save:SetScript("OnClick",function() DB().pricePer5=math.max(0,e1:GetNumber() or 0)*10000 DB().runsPerPack=clamp(e2:GetNumber() or 5,1,50) printLocal("Saved price/runs.") if UI.RefreshSummary then UI.RefreshSummary() end end)
 
-    -- Actions Section
     local actions=Section(p,12,-388,470,110,"Actions")
     local a=actions.body
-    local finish=CreateFrame("Button",nil,a,"UIPanelButtonTemplate")
-    finish:SetSize(140,22)
-    finish:SetPoint("TOPLEFT",6,-6)
-    finish:SetText("Finish Boost")
-
-    local refund=CreateFrame("Button",nil,a,"UIPanelButtonTemplate")
-    refund:SetSize(140,22)
-    refund:SetPoint("LEFT",finish,"RIGHT",8,0)
-    refund:SetText("Refund Boost")
-    MakeButtonRed(refund)
-
-    refund:SetScript("OnClick",ShowRefundConfirm)
-    finish:SetScript("OnClick",function() NS.FinishBoost() end)
+    local finish=CreateFrame("Button",nil,a,"UIPanelButtonTemplate") finish:SetSize(140,22) finish:SetPoint("TOPLEFT",6,-6) finish:SetText("Finish Boost")
+    local refund=CreateFrame("Button",nil,a,"UIPanelButtonTemplate") refund:SetSize(140,22) refund:SetPoint("LEFT",finish,"RIGHT",8,0) refund:SetText("Refund Boost") MakeButtonRed(refund)
+    refund:SetScript("OnClick",ShowRefundConfirm) finish:SetScript("OnClick",function() NS.FinishBoost() end)
   end -- end main tab
+  -------------------------------------------------- Party tab
+  do
+    local p=panels[2]
+    local roster=Section(p,12,-88,996,520,"Party / Roster")
+    local sb=roster.body
+    local list={}
+    for i=1,15 do
+      local fs=Cell(sb,6,960,"LEFT","GameFontHighlight")
+      fs:SetPoint("TOPLEFT",6,-(i-1)*18)
+      list[i]=fs
+    end
+    function UI.RefreshParty()
+      EnsureRoster(PartyList())
+      local buyers=Buyers()
+      local i=1
+      for _,n in ipairs(buyers) do
+        if i>#list then break end
+        local r=DB().roster[n]
+        list[i]:SetText(("%s — paid %s, done %d"):format(n,fmtCoins(r.paid or 0),r.done or 0))
+        i=i+1
+      end
+      for j=i,#list do list[j]:SetText("") end
+    end
+  end
+
+  -------------------------------------------------- Runs tab
+  do
+    local p=panels[3]
+    local log=Section(p,12,-88,996,520,"Runs Log")
+    local sb=log.body
+    local list={}
+    for i=1,15 do
+      local fs=Cell(sb,6,960,"LEFT","GameFontHighlight")
+      fs:SetPoint("TOPLEFT",6,-(i-1)*18)
+      list[i]=fs
+    end
+    function UI.RefreshRuns()
+      local i=1
+      for _,e in ipairs(DB().runsLog) do
+        if i>#list then break end
+        local line=("%s | %s | %s"):format(date("%H:%M",e.endts or 0),fmtHMS(e.dur or 0),fmtCoins(e.coin or 0))
+        list[i]:SetText(line)
+        i=i+1
+      end
+      for j=i,#list do list[j]:SetText("") end
+    end
+  end
+
+  -------------------------------------------------- Blacklist tab
+  do
+    local p=panels[4]
+    local bl=Section(p,12,-88,996,520,"Blacklist")
+    local sb=bl.body
+    local list={}
+    for i=1,15 do
+      local fs=Cell(sb,6,960,"LEFT","GameFontHighlight")
+      fs:SetPoint("TOPLEFT",6,-(i-1)*18)
+      list[i]=fs
+    end
+    function UI.RefreshBlacklist()
+      local i=1
+      for name,entry in pairs(DB().blacklist) do
+        if i>#list then break end
+        list[i]:SetText(("%s — %s (%s)"):format(name,BL_GetReason(entry),BL_GetSource(entry)))
+        i=i+1
+      end
+      for j=i,#list do list[j]:SetText("") end
+    end
+  end
+
+  -------------------------------------------------- Settings tab
+  do
+    local p=panels[5]
+    local opts=Section(p,12,-88,996,520,"Settings")
+    local sb=opts.body
+    local l1=sb:CreateFontString(nil,"OVERLAY","GameFontNormal")
+    l1:SetPoint("TOPLEFT",6,-6) l1:SetText("Announce Channel: AUTO/PARTY/RAID")
+    local e1=CreateFrame("EditBox",nil,sb,"InputBoxTemplate")
+    e1:SetPoint("LEFT",l1,"RIGHT",8,0) e1:SetSize(120,20)
+    e1:SetText(DB().announce or "AUTO")
+    e1:SetScript("OnEnterPressed",function(self) DB().announce=self:GetText() printLocal("Saved announce channel.") end)
+  end
+
+  -------------------------------------------------- Loot Log tab
+  do
+    local p=panels[6]
+    local log=Section(p,12,-88,996,520,"Loot Log")
+    local sb=log.body
+    local list={}
+    for i=1,15 do
+      local fs=Cell(sb,6,960,"LEFT","GameFontHighlight")
+      fs:SetPoint("TOPLEFT",6,-(i-1)*18)
+      list[i]=fs
+    end
+    function UI.RefreshLoot()
+      local i=1
+      for _,ev in ipairs(DB().lootEvents or{}) do
+        if i>#list then break end
+        list[i]:SetText(("%s — %s"):format(date("%H:%M",ev.t or 0),ev.link or "?"))
+        i=i+1
+      end
+      for j=i,#list do list[j]:SetText("") end
+    end
+  end
+
+  -------------------------------------------------- History tab
+  do
+    local p=panels[7]
+    local hist=Section(p,12,-88,996,520,"History")
+    local sb=hist.body
+    local list={}
+    for i=1,15 do
+      local fs=Cell(sb,6,960,"LEFT","GameFontHighlight")
+      fs:SetPoint("TOPLEFT",6,-(i-1)*18)
+      list[i]=fs
+    end
+    function UI.RefreshHistory()
+      local i=1
+      for _,ev in ipairs(DB().historyBoosts or{}) do
+        if i>#list then break end
+        list[i]:SetText(("%s — %s"):format(date("%m/%d %H:%M",ev.ts or 0),ev.summary or "?"))
+        i=i+1
+      end
+      for j=i,#list do list[j]:SetText("") end
+    end
+  end
 end -- end BuildMain
-------------------------------------------------------------------------
--- Party tab
-------------------------------------------------------------------------
-do
-  local p=panels[2]
-  local roster=Section(p,12,-88,996,520,"Party / Roster")
-  local sb=roster.body
-  local list={}
-  for i=1,15 do
-    local fs=Cell(sb,6,960,"LEFT","GameFontHighlight")
-    fs:SetPoint("TOPLEFT",6,-(i-1)*18)
-    list[i]=fs
-  end
-  function UI.RefreshParty()
-    EnsureRoster(PartyList())
-    local buyers=Buyers()
-    local i=1
-    for _,n in ipairs(buyers) do
-      if i>#list then break end
-      local r=DB().roster[n]
-      list[i]:SetText(("%s — paid %s, done %d"):format(n,fmtCoins(r.paid or 0),r.done or 0))
-      i=i+1
-    end
-    for j=i,#list do list[j]:SetText("") end
-  end
-end
-
-------------------------------------------------------------------------
--- Runs tab
-------------------------------------------------------------------------
-do
-  local p=panels[3]
-  local log=Section(p,12,-88,996,520,"Runs Log")
-  local sb=log.body
-  local list={}
-  for i=1,15 do
-    local fs=Cell(sb,6,960,"LEFT","GameFontHighlight")
-    fs:SetPoint("TOPLEFT",6,-(i-1)*18)
-    list[i]=fs
-  end
-  function UI.RefreshRuns()
-    local i=1
-    for _,e in ipairs(DB().runsLog) do
-      if i>#list then break end
-      local line=("%s | %s | %s"):format(date("%H:%M",e.endts or 0),fmtHMS(e.dur or 0),fmtCoins(e.coin or 0))
-      list[i]:SetText(line)
-      i=i+1
-    end
-    for j=i,#list do list[j]:SetText("") end
-  end
-end
-
-------------------------------------------------------------------------
--- Blacklist tab
-------------------------------------------------------------------------
-do
-  local p=panels[4]
-  local bl=Section(p,12,-88,996,520,"Blacklist")
-  local sb=bl.body
-  local list={}
-  for i=1,15 do
-    local fs=Cell(sb,6,960,"LEFT","GameFontHighlight")
-    fs:SetPoint("TOPLEFT",6,-(i-1)*18)
-    list[i]=fs
-  end
-  function UI.RefreshBlacklist()
-    local i=1
-    for name,entry in pairs(DB().blacklist) do
-      if i>#list then break end
-      list[i]:SetText(("%s — %s (%s)"):format(name,BL_GetReason(entry),BL_GetSource(entry)))
-      i=i+1
-    end
-    for j=i,#list do list[j]:SetText("") end
-  end
-end
-
-------------------------------------------------------------------------
--- Settings tab
-------------------------------------------------------------------------
-do
-  local p=panels[5]
-  local opts=Section(p,12,-88,996,520,"Settings")
-  local sb=opts.body
-  local l1=sb:CreateFontString(nil,"OVERLAY","GameFontNormal")
-  l1:SetPoint("TOPLEFT",6,-6)
-  l1:SetText("Announce Channel: AUTO/PARTY/RAID")
-  local e1=CreateFrame("EditBox",nil,sb,"InputBoxTemplate")
-  e1:SetPoint("LEFT",l1,"RIGHT",8,0)
-  e1:SetSize(120,20)
-  e1:SetText(DB().announce or "AUTO")
-  e1:SetScript("OnEnterPressed",function(self)
-    DB().announce=self:GetText()
-    printLocal("Saved announce channel.")
-  end)
-end
-
-------------------------------------------------------------------------
--- Loot Log tab
-------------------------------------------------------------------------
-do
-  local p=panels[6]
-  local log=Section(p,12,-88,996,520,"Loot Log")
-  local sb=log.body
-  local list={}
-  for i=1,15 do
-    local fs=Cell(sb,6,960,"LEFT","GameFontHighlight")
-    fs:SetPoint("TOPLEFT",6,-(i-1)*18)
-    list[i]=fs
-  end
-  function UI.RefreshLoot()
-    local i=1
-    for _,ev in ipairs(DB().lootEvents or {}) do
-      if i>#list then break end
-      list[i]:SetText(("%s — %s"):format(date("%H:%M",ev.t or 0),ev.link or "?"))
-      i=i+1
-    end
-    for j=i,#list do list[j]:SetText("") end
-  end
-end
-
-------------------------------------------------------------------------
--- History tab
-------------------------------------------------------------------------
-do
-  local p=panels[7]
-  local hist=Section(p,12,-88,996,520,"History")
-  local sb=hist.body
-  local list={}
-  for i=1,15 do
-    local fs=Cell(sb,6,960,"LEFT","GameFontHighlight")
-    fs:SetPoint("TOPLEFT",6,-(i-1)*18)
-    list[i]=fs
-  end
-  function UI.RefreshHistory()
-    local i=1
-    for _,ev in ipairs(DB().historyBoosts or {}) do
-      if i>#list then break end
-      list[i]:SetText(("%s — %s"):format(date("%m/%d %H:%M",ev.ts or 0),ev.summary or "?"))
-      i=i+1
-    end
-    for j=i,#list do list[j]:SetText("") end
-  end
-end
-
 ------------------------------------------------------------------------
 -- Refunds & Finish
 ------------------------------------------------------------------------
 function NS.CalcRefunds()
-  local ppr=PricePerRun()
-  local out={}
+  local ppr=PricePerRun() local out={}
   for n,r in pairs(DB().roster) do
     if not (r.m1 or r.m2 or r.m1f or r.m2f) then
       local paidRuns=math.floor((r.paid or 0)/ppr)
@@ -911,36 +483,30 @@ function NS.CalcRefunds()
 end
 
 function NS.RefundBoost()
-  local owed=NS.CalcRefunds()
-  local any=false
-  for _ in pairs(owed) do any=true break end
-  if not any then printLocal("No refunds are due."); return end
+  local owed=NS.CalcRefunds() local any=false for _ in pairs(owed) do any=true break end
+  if not any then printLocal("No refunds are due.") return end
   announce("Refunds (paid minus completed runs):")
-  for n,c in pairs(owed) do
-    announce(("%s → %s"):format(n,fmtCoins(c)))
-  end
+  for n,c in pairs(owed) do announce(("%s → %s"):format(n,fmtCoins(c))) end
 end
 
 function NS.FinishBoost()
-  local pot,m1Pay,m2Pay=0,0,0
-  for _,r in pairs(DB().roster) do
-    if not (r.m1 or r.m2 or r.m1f or r.m2f) then
-      pot=pot+(r.paid or 0)
+  local pot,m1pay,m2pay
+  do
+    local traded=0
+    for n,r in pairs(DB().roster) do if not (r.m1 or r.m2 or r.m1f or r.m2f) then traded=traded+(r.paid or 0) end end
+    pot=traded
+    if DB().soloBoost then m1pay=pot m2pay=0 else
+      local basePct2=clamp(DB().mage2Pct or 35,0,100)/100
+      local basePct1=1-basePct2
+      m1pay=math.floor(pot*basePct1)
+      m2pay=pot-m1pay
     end
   end
-  local d=DB().deathroll or {}
-  local adj1=clamp((tonumber(d.m1Adj or 0) or 0)/100,-1,1)
-  local basePct2=clamp(DB().mage2Pct or 35,0,100)/100
-  local basePct1=1-basePct2
-  local pct1=clamp(basePct1+adj1,0,1)
-  local pct2=1-pct1
-  m1Pay=math.floor(pot*pct1)
-  m2Pay=pot-m1Pay
-
-  announce(("Boost finished. Pot %s. Mage1 gets %s, Mage2 gets %s."):format(fmtCoins(pot),fmtCoins(m1Pay),fmtCoins(m2Pay)))
-  table.insert(DB().historyBoosts,1,{ts=now(),summary=("Pot %s, M1 %s, M2 %s"):format(fmtCoins(pot),fmtCoins(m1Pay),fmtCoins(m2Pay))})
-  while #DB().historyBoosts>50 do table.remove(DB().historyBoosts) end
+  announce(("Boost finished. Pot: %s. Mage1: %s. Mage2: %s"):format(fmtCoins(pot),fmtCoins(m1pay),fmtCoins(m2pay)))
+  table.insert(DB().historyBoosts,1,{ts=now(),summary=("Pot %s, M1 %s, M2 %s"):format(fmtCoins(pot),fmtCoins(m1pay),fmtCoins(m2pay))})
+  while #DB().historyBoosts>20 do table.remove(DB().historyBoosts) end
 end
+
 ------------------------------------------------------------------------
 -- Events
 ------------------------------------------------------------------------
@@ -963,29 +529,20 @@ F:SetScript("OnEvent",function(self,event,...)
       EnsureDefaults()
       printLocal("BoostSplit loaded. Use /bs to open.")
     end
-
   elseif event=="PLAYER_LOGIN" then
-    C_ChatInfo.RegisterAddonMessagePrefix(PREFIX)
-    C_ChatInfo.RegisterAddonMessagePrefix(PREFIX_R)
-    BuildOverlay()
-    BuildMain()
-    if DB().overlayEnabled and BoostSplitOverlay then
-      BoostSplitOverlay:Show()
-    end
-
+    BuildOverlay() BuildMain()
+    if DB().overlayEnabled and BoostSplitOverlay then BoostSplitOverlay:Show() end
   elseif event=="GROUP_ROSTER_UPDATE" then
     if UI.RefreshParty then UI.RefreshParty() end
     if UI.RefreshSummary then UI.RefreshSummary() end
     if OVERLAY.Refresh then OVERLAY.Refresh() end
-
   elseif event=="CHAT_MSG_SYSTEM" then
     local msg=...
     local roller,roll,minv,maxv=DR_ParseRoll(msg)
     if roller and roll and minv and maxv then
       local d=DB().deathroll
       if d and d.active then
-        d.lastRoller=roller
-        d.upper=roll
+        d.lastRoller=roller d.upper=roll
         if roll==1 then
           local winM2=(roller==DB().mage2Name)
           local delta=DR_ApplyWin(winM2)
@@ -994,26 +551,21 @@ F:SetScript("OnEvent",function(self,event,...)
         if OVERLAY.DR_RefreshPanel then OVERLAY.DR_RefreshPanel() end
       end
     end
-
   elseif event=="CHAT_MSG_ADDON" then
     local prefix,msg,chan,sender=...
     if prefix==PREFIX and IsSenderInGroup(sender) then
       local t=NS.Deserialize(msg)
       if type(t)=="table" and t.op then
+        -- sync handler (simplified)
         MarkSynced(sender)
-        -- handle sync ops (not expanded here, kept from original)
       end
     elseif prefix==PREFIX_R then
-      -- realm-wide comms (blacklist sync etc.)
+      -- realm sync (not expanded)
     end
-
   elseif event=="CHAT_MSG_LOOT" then
     local msg,_,_,_,player=...
-    if msg and player then
-      table.insert(DB().lootEvents,{t=now(),msg=msg,player=player})
-      if UI.RefreshLoot then UI.RefreshLoot() end
-    end
-
+    table.insert(DB().lootEvents,{t=now(),msg=msg,player=player})
+    if UI.RefreshLoot then UI.RefreshLoot() end
   elseif event=="CHAT_MSG_MONEY" then
     local msg=...
     table.insert(DB().coinEvents,{t=now(),msg=msg})
@@ -1030,8 +582,7 @@ SlashCmdList.BOOSTSPLIT=function(msg)
   if msg:lower():match("^%s*overlay") then
     if BoostSplitOverlay then
       local s=not BoostSplitOverlay:IsShown()
-      BoostSplitOverlay:SetShown(s)
-      DB().overlayEnabled=s
+      BoostSplitOverlay:SetShown(s) DB().overlayEnabled=s
     end
     return
   end
@@ -1040,11 +591,7 @@ SlashCmdList.BOOSTSPLIT=function(msg)
     return
   end
   if BoostSplitFrame then
-    if BoostSplitFrame:IsShown() then
-      BoostSplitFrame:Hide()
-    else
-      BoostSplitFrame:Show()
-    end
+    if BoostSplitFrame:IsShown() then BoostSplitFrame:Hide() else BoostSplitFrame:Show() end
   end
 end
 
